@@ -217,7 +217,9 @@ public:
     /// @param writeQueue queue to push downloaded ledger objects
     /// @return true if the download was successful
     bool
-    loadInitialLedger(uint32_t ledgerSequence);
+    loadInitialLedger(
+      uint32_t sequence,
+      ThreadSafeQueue<std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse>>& writeQueue);
 
     /// Begin sequence of operations to connect to the ETL source and subscribe
     /// to ledgers and transactions_proposed
@@ -293,7 +295,9 @@ public:
     /// @param sequence sequence of ledger to download
     /// @param writeQueue queue to push downloaded data to
     void
-    loadInitialLedger(uint32_t sequence);
+    loadInitialLedger(
+        uint32_t sequence, 
+        ThreadSafeQueue<std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse>>& writeQueue);
 
     /// Fetch data for a specific ledger. This function will continuously try
     /// to fetch data for the specified ledger until the fetch succeeds, the

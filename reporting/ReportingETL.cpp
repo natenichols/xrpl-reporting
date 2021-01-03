@@ -19,6 +19,7 @@
 
 #include <reporting/DBHelpers.h>
 #include <reporting/ReportingETL.h>
+#include <ripple/basics/StringUtilities.h>
 
 #include <ripple/beast/core/CurrentThreadName.h>
 #include <boost/asio/connect.hpp>
@@ -107,6 +108,76 @@ ReportingETL::insertTransactions(
     return accountTxData;
 }
 
+std::optional<BookDirectoryData>
+ReportingETL::handleOffer(std::string const& keyString, std::uint32_t seq, std::string const& offer)
+{
+    auto key = ripple::uint256::fromVoid(keyString.data());
+    ripple::SerialIter it{offer.data(), offer.size()};
+    ripple::SLE sle{it, key};
+
+    return BookDirectoryData(sle, seq);
+}
+
+std::vector<BookDirectoryData>
+ReportingETL::insertObjects(
+    ripple::LedgerInfo const& ledger,
+    org::xrpl::rpc::v1::GetLedgerResponse& rawData)
+{
+    std::vector<BookDirectoryData> dirData = {};
+    for (auto& obj : *(rawData.mutable_ledger_objects()->mutable_objects()))
+    {
+        if(*obj.mutable_data() == "")
+            continue;
+
+        std::string str = *obj.mutable_data();
+        short offer_bytes = (str[1] << 8) | str[2];
+
+        if(offer_bytes == 0x006f)
+        {
+            auto data = handleOffer(*obj.mutable_key(), ledger.seq, *obj.mutable_data());
+            if (data)
+                dirData.push_back(*data);
+        }
+
+        flatMapBackend_.store(
+            std::move(*obj.mutable_key()),
+            ledger.seq,
+            std::move(*obj.mutable_data()));
+    }
+
+    return dirData;
+}
+
+std::vector<BookDirectoryData>
+ReportingETL::insertObjects(
+    ripple::LedgerInfo const& ledger,
+    org::xrpl::rpc::v1::GetLedgerDataResponse& rawData)
+{
+    std::vector<BookDirectoryData> dirData = {};
+    for (auto& obj : *(rawData.mutable_ledger_objects()->mutable_objects()))
+    {
+        if(*obj.mutable_data() == "")
+            continue;
+
+        std::string str = *obj.mutable_data();
+        short offer_bytes = (str[1] << 8) | str[2];
+
+        if(offer_bytes == 0x006f)
+        {
+            auto data = handleOffer(*obj.mutable_key(), ledger.seq, *obj.mutable_data());
+            if (data)
+                dirData.push_back(*data);
+        }
+
+        flatMapBackend_.store(
+            std::move(*obj.mutable_key()),
+            ledger.seq,
+            std::move(*obj.mutable_data()));
+    }
+
+    return dirData;
+}
+
 std::optional<ripple::LedgerInfo>
 ReportingETL::loadInitialLedger(uint32_t startingSequence)
 {
@@ -140,18 +211,46 @@ ReportingETL::loadInitialLedger(uint32_t startingSequence)
 
     auto start = std::chrono::system_clock::now();
 
+    ThreadSafeQueue<std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse>> writeQueue;
+    std::vector<BookDirectoryData> bookDirData = {};
+
+    std::thread AsyncWriter([this, &bookDirData, &writeQueue, &lgrInfo](){
+      std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse> data;
+      size_t num = 0;
+
+      while(!stopping_ && (data = writeQueue.pop()))
+      {
+        if(!data)
+          break;
+
+        auto booksToWrite = insertObjects(lgrInfo, *data);
+
+        // After written to ReportingBackend, save books to write to postgres
+        bookDirData.insert(
+          bookDirData.end(),
+          std::make_move_iterator(booksToWrite.begin()),
+          std::make_move_iterator(booksToWrite.end()));
+      }
+    });
+
     // download the full account state map. This function downloads full ledger
     // data and pushes the downloaded data into the writeQueue. asyncWriter
     // consumes from the queue and inserts the data into the Ledger object.
     // Once the below call returns, all data has been pushed into the queue
-    loadBalancer_.loadInitialLedger(startingSequence);
+    loadBalancer_.loadInitialLedger(startingSequence, writeQueue);
+
+    writeQueue.push({});
 
     if (!stopping_)
     {
         flatMapBackend_.sync();
         writeToPostgres(lgrInfo, accountTxData, pgPool_);
+        writeToPostgres(bookDirData, pgPool_);
     }
     auto end = std::chrono::system_clock::now();
+
+    AsyncWriter.join();
+
     BOOST_LOG_TRIVIAL(debug) << "Time to download and store ledger = "
                              << ((end - start).count()) / 1000000000.0;
     return lgrInfo;
@@ -164,6 +263,7 @@ ReportingETL::publishLedger(ripple::LedgerInfo const& lgrInfo)
 
     setLastPublish();
 }
+
 bool
 ReportingETL::publishLedger(uint32_t ledgerSequence, uint32_t maxAttempts)
 {
@@ -262,7 +362,7 @@ ReportingETL::fetchLedgerDataAndDiff(uint32_t idx)
     return response;
 }
 
-std::pair<ripple::LedgerInfo, std::vector<AccountTransactionsData>>
+std::tuple<ripple::LedgerInfo, std::vector<AccountTransactionsData>, std::vector<BookDirectoryData>>
 ReportingETL::buildNextLedger(org::xrpl::rpc::v1::GetLedgerResponse& rawData)
 {
     BOOST_LOG_TRIVIAL(info) << __func__ << " : "
@@ -283,13 +383,8 @@ ReportingETL::buildNextLedger(org::xrpl::rpc::v1::GetLedgerResponse& rawData)
         << "Inserted all transactions. Number of transactions  = "
         << rawData.transactions_list().transactions_size();
 
-    for (auto& obj : *(rawData.mutable_ledger_objects()->mutable_objects()))
-    {
-        flatMapBackend_.store(
-            std::move(*obj.mutable_key()),
-            lgrInfo.seq,
-            std::move(*obj.mutable_data()));
-    }
+    std::vector<BookDirectoryData> bookDirData{insertObjects(lgrInfo, rawData)};
+
     flatMapBackend_.sync();
     BOOST_LOG_TRIVIAL(debug)
         << __func__ << " : "
@@ -299,7 +394,7 @@ ReportingETL::buildNextLedger(org::xrpl::rpc::v1::GetLedgerResponse& rawData)
     BOOST_LOG_TRIVIAL(debug)
         << __func__ << " : "
         << "Finished ledger update. " << detail::toString(lgrInfo);
-    return {lgrInfo, std::move(accountTxData)};
+    return {lgrInfo, std::move(accountTxData), std::move(bookDirData)};
 }
 
 // Database must be populated when this starts
@@ -413,9 +508,10 @@ ReportingETL::runETLPipeline(uint32_t startSequence)
                 continue;
 
             auto start = std::chrono::system_clock::now();
-            auto [lgrInfo, accountTxData] = buildNextLedger(*fetchResponse);
+            auto [lgrInfo, accountTxData, bookData] = buildNextLedger(*fetchResponse);
+
             auto end = std::chrono::system_clock::now();
-            if (!writeToPostgres(lgrInfo, accountTxData, pgPool_))
+            if (!writeToPostgres(lgrInfo, accountTxData, pgPool_) || !writeToPostgres(bookData, pgPool_))
                 writeConflict = true;
 
             auto duration = ((end - start).count()) / 1000000000.0;
@@ -627,4 +723,3 @@ ReportingETL::ReportingETL(
     flatMapBackend_.open();
     initSchema(pgPool_);
 }
-

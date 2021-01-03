@@ -59,7 +59,8 @@ ETLSource::ETLSource(
         try
         {
             boost::asio::ip::tcp::endpoint endpoint{
-                boost::asio::ip::make_address(ip_), std::stoi(grpcPort_)};
+                boost::asio::ip::make_address(ip_),
+                static_cast<unsigned short>(std::stoi(grpcPort_))};
             std::stringstream ss;
             ss << endpoint;
             stub_ = org::xrpl::rpc::v1::XRPLedgerAPIService::NewStub(
@@ -399,6 +400,7 @@ public:
     process(
         std::unique_ptr<org::xrpl::rpc::v1::XRPLedgerAPIService::Stub>& stub,
         grpc::CompletionQueue& cq,
+        ThreadSafeQueue<std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse>>& writeQueue,
         CassandraFlatMapBackend& backend,
         bool abort = false)
     {
@@ -439,13 +441,7 @@ public:
             call(stub, cq);
         }
 
-        for (auto& obj : *(cur_->mutable_ledger_objects()->mutable_objects()))
-        {
-            backend.store(
-                std::move(*obj.mutable_key()),
-                request_.ledger().sequence(),
-                std::move(*obj.mutable_data()));
-        }
+        writeQueue.push(std::move(*cur_));
 
         return more ? CallStatus::MORE : CallStatus::DONE;
     }
@@ -477,7 +473,9 @@ public:
 };
 
 bool
-ETLSource::loadInitialLedger(uint32_t sequence)
+ETLSource::loadInitialLedger(
+  uint32_t sequence,
+  ThreadSafeQueue<std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse>>& writeQueue)
 {
     if (!stub_)
         return false;
@@ -515,7 +513,7 @@ ETLSource::loadInitialLedger(uint32_t sequence)
         {
             BOOST_LOG_TRIVIAL(debug)
                 << "Marker prefix = " << ptr->getMarkerPrefix();
-            auto result = ptr->process(stub_, cq, backend_, abort);
+            auto result = ptr->process(stub_, cq, writeQueue, backend_, abort);
             if (result != AsyncCallData::CallStatus::MORE)
             {
                 numFinished++;
@@ -577,11 +575,13 @@ ETLLoadBalancer::ETLLoadBalancer(
 }
 
 void
-ETLLoadBalancer::loadInitialLedger(uint32_t sequence)
+ETLLoadBalancer::loadInitialLedger(
+    uint32_t sequence, 
+    ThreadSafeQueue<std::optional<org::xrpl::rpc::v1::GetLedgerDataResponse>>& writeQueue)
 {
     execute(
-        [this, &sequence](auto& source) {
-            bool res = source->loadInitialLedger(sequence);
+        [this, &sequence, &writeQueue](auto& source) {
+            bool res = source->loadInitialLedger(sequence, writeQueue);
             if (!res)
             {
                 BOOST_LOG_TRIVIAL(error) << "Failed to download initial ledger."

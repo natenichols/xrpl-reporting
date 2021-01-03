@@ -40,6 +40,7 @@
 #include <chrono>
 
 struct AccountTransactionsData;
+struct BookDirectoryData;
 
 /**
  * This class is responsible for continuously extracting data from a
@@ -182,6 +183,19 @@ private:
     void
     monitorReadOnly();
 
+    std::optional<BookDirectoryData>
+    handleOffer(std::string const& keyString, std::uint32_t seq, std::string const& offer);
+
+    std::vector<BookDirectoryData>
+    insertObjects(
+        ripple::LedgerInfo const& ledger,
+        org::xrpl::rpc::v1::GetLedgerResponse& rawData);
+
+    std::vector<BookDirectoryData>
+    insertObjects(
+        ripple::LedgerInfo const& ledger,
+        org::xrpl::rpc::v1::GetLedgerDataResponse& rawData);
+
     /// Extract data for a particular ledger from an ETL source. This function
     /// continously tries to extract the specified ledger (using all available
     /// ETL sources) until the extraction succeeds, or the server shuts down.
@@ -220,7 +234,7 @@ private:
     /// @param parent the previous ledger
     /// @param rawData data extracted from an ETL source
     /// @return the newly built ledger and data to write to Postgres
-    std::pair<ripple::LedgerInfo, std::vector<AccountTransactionsData>>
+    std::tuple<ripple::LedgerInfo, std::vector<AccountTransactionsData>, std::vector<BookDirectoryData>>
     buildNextLedger(org::xrpl::rpc::v1::GetLedgerResponse& rawData);
 
     /// Attempt to read the specified ledger from the database, and then publish
@@ -245,6 +259,12 @@ public:
     ~ReportingETL()
     {
         onStop();
+    }
+
+    PgPool&
+    getPgPool()
+    {
+        return *pgPool_;
     }
 
     NetworkValidatedLedgers&

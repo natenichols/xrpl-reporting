@@ -48,16 +48,44 @@ struct AccountTransactionsData
     }
 };
 
+
+/// Struct to write book directories to Postgres
+struct BookDirectoryData
+{
+    ripple::uint256 directoryIndex;
+    std::uint32_t ledgerSequence;
+    ripple::uint256 bookIndex;
+
+    BookDirectoryData(
+        ripple::SLE const& sle,
+        std::uint32_t ledgerSequence)
+        : directoryIndex(sle.getFieldH256(ripple::sfBookDirectory))
+        , ledgerSequence(ledgerSequence)
+        , bookIndex(sle.key())
+    {
+    }
+};
+
+
 /// Write new ledger and transaction data to Postgres
 /// @param info Ledger Info to write
 /// @param accountTxData transaction data to write
 /// @param pgPool pool of Postgres connections
-/// @param j journal (for logging)
 /// @return whether the write succeeded
 bool
 writeToPostgres(
     ripple::LedgerInfo const& info,
     std::vector<AccountTransactionsData> const& accountTxData,
+    std::shared_ptr<PgPool> const& pgPool);
+
+
+/// Write new book directory data to Postgres
+/// @param accountTxData transaction data to write
+/// @param pgPool pool of Postgres connections
+/// @return whether the write succeeded
+bool
+writeToPostgres(
+    std::vector<BookDirectoryData> const& bookDirData,
     std::shared_ptr<PgPool> const& pgPool);
 
 #endif

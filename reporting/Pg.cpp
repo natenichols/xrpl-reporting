@@ -778,6 +778,14 @@ CREATE TABLE IF NOT EXISTS account_transactions (
 CREATE INDEX IF NOT EXISTS fki_account_transactions_idx ON
     account_transactions USING btree (ledger_seq, transaction_index);
 
+-- Table to store book directories.
+CREATE TABLE IF NOT EXISTS books (
+    book_directory bytea NOT NULL,
+    ledger_index   bigint  NOT NULL,
+    offer_indexes  bytea NOT NULL,
+    PRIMARY KEY (book_directory, ledger_index, offer_indexes)
+);
+
 -- Avoid inadvertent administrative tampering with committed data.
 CREATE OR REPLACE RULE ledgers_update_protect AS ON UPDATE TO
     ledgers DO INSTEAD NOTHING;

@@ -128,3 +128,58 @@ writeToPostgres(
     }
 }
 
+bool
+writeToPostgres(
+    std::vector<BookDirectoryData> const& bookDirData,
+    std::shared_ptr<PgPool> const& pgPool)
+{
+    BOOST_LOG_TRIVIAL(debug) << __func__ << " : "
+                             << "Writing " << bookDirData.size() 
+                             << "books to Postgres";
+
+    try
+    {
+        PgQuery pg(pgPool);
+        auto res = pg("BEGIN");
+        if (!res || res.status() != PGRES_COMMAND_OK)
+        {
+            std::stringstream msg;
+            msg << "bulkWriteToTable : Postgres error inserting books: " << res.msg();
+            throw std::runtime_error(msg.str());
+        }
+
+        std::stringstream booksCopyBuffer;
+        for (auto const& data : bookDirData)
+        {
+            std::string directoryIndex = ripple::strHex(data.directoryIndex);
+            std::string bookIndex = ripple::strHex(data.bookIndex);
+            auto ledgerSeq = data.ledgerSequence;
+
+            booksCopyBuffer << "\\\\x" << directoryIndex << '\t' 
+                                   << std::to_string(ledgerSeq) << '\t'
+                                   << "\\\\x" << bookIndex << '\n';
+        }
+
+        pg.bulkInsert("books", booksCopyBuffer.str());
+
+        res = pg("COMMIT");
+        if (!res || res.status() != PGRES_COMMAND_OK)
+        {
+            std::stringstream msg;
+            msg << "bulkWriteToTable : Postgres error inserting books: " << res.msg();
+            throw std::runtime_error(msg.str());
+        }
+
+        BOOST_LOG_TRIVIAL(info) << __func__ << " : "
+                                << "Successfully wrote to Postgres";
+        return true;
+    }
+    catch(std::exception& e)
+    {
+        BOOST_LOG_TRIVIAL(error)
+            << __func__
+            << "Caught exception writing to Postgres : " << e.what();
+        assert(false);
+        return false;
+    }
+}

@@ -351,7 +351,7 @@ public:
                 continue;
             }
 
-            query = {};
+            query.str("");
             query << "SELECT * FROM " << tableName << "flat"
                   << " LIMIT 1";
             statement = makeStatement(query.str().c_str(), 0);
@@ -377,7 +377,7 @@ public:
                     continue;
                 }
             }
-            query = {};
+            query.str("");
             query << "CREATE TABLE IF NOT EXISTS " << tableName
                   << "flattransactions"
                   << " ( hash blob PRIMARY KEY, sequence bigint, transaction "
@@ -396,7 +396,7 @@ public:
                 continue;
             }
 
-            query = {};
+            query.str("");
             query << "SELECT * FROM " << tableName << "flattransactions"
                   << " LIMIT 1";
             statement = makeStatement(query.str().c_str(), 0);
@@ -460,7 +460,7 @@ public:
              */
             cass_future_free(prepare_future);
 
-            query = {};
+            query.str("");
             query << "INSERT INTO " << tableName << "flattransactions"
                   << " (hash, sequence, transaction, metadata) VALUES (?, ?, "
                      "?, ?)";
@@ -486,7 +486,7 @@ public:
             insertTransaction_ = cass_future_get_prepared(prepare_future);
             cass_future_free(prepare_future);
 
-            query = {};
+            query.str("");
             query << "SELECT object, sequence FROM " << tableName << "flat"
                   << " WHERE key = ? AND sequence <= ? ORDER BY sequence DESC";
             prepare_future =
@@ -515,7 +515,7 @@ public:
              */
             cass_future_free(prepare_future);
 
-            query = {};
+            query.str("");
             query << "SELECT transaction,metadata FROM " << tableName
                   << "flattransactions"
                   << " WHERE hash = ?";

@@ -52,24 +52,24 @@ message("${xrpl_core_includes}")
 INCLUDE_DIRECTORIES(${xrpl_core_includes})
 include(cassandra)
 include(Postgres)
-#include (FetchContent)
-#FetchContent_Declare(
+include (FetchContent)
+# FetchContent_Declare(
 #  rippled
 #  GIT_REPOSITORY https://github.com/ripple/rippled.git
 #  GIT_TAG develop
-#)
-#FetchContent_MakeAvailable(rippled)
+# )
+# FetchContent_MakeAvailable(rippled)
 
 
-#include(FetchContent)
-#
-#FetchContent_Declare(
+# include(FetchContent)
+
+# FetchContent_Declare(
 #  gRPC
 #  GIT_REPOSITORY https://github.com/grpc/grpc
 #  GIT_TAG        v1.28.0
 #  )
-#set(FETCHCONTENT_QUIET OFF)
-#FetchContent_MakeAvailable(gRPC)
+# set(FETCHCONTENT_QUIET OFF)
+# FetchContent_MakeAvailable(gRPC)
 #
 #
 #
@@ -122,7 +122,7 @@ include(Postgres)
 #target_link_libraries (grpc_protobufs ${_REFLECTION} ${_PROTOBUF_LIBPROTOBUF} ${_GRPC_GRPCPP})
 
 
-target_sources(reporting PRIVATE reporting/ETLSource.cpp reporting/ReportingBackend.cpp reporting/Pg.cpp reporting/DBHelpers.cpp reporting/ReportingETL.cpp handlers/AccountInfo.cpp)
+target_sources(reporting PRIVATE reporting/ETLSource.cpp reporting/ReportingBackend.cpp reporting/Pg.cpp reporting/DBHelpers.cpp reporting/ReportingETL.cpp handlers/AccountInfo.cpp handlers/BookOffers.cpp)
 
 
 message(${Boost_LIBRARIES})
