@@ -145,3 +145,63 @@ flatMapReadCallback(CassFuture* fut, void* cbData)
         finish();
     }
 }
+
+// Process the result of an asynchronous read. Retry on error
+// @param fut cassandra future associated with the read
+// @param cbData struct that holds the request parameters
+void
+flatMapReadObjectCallback(CassFuture* fut, void* cbData)
+{
+    CassandraFlatMapBackend::ReadObjectCallbackData& requestParams =
+        *static_cast<CassandraFlatMapBackend::ReadObjectCallbackData*>(cbData);
+
+    CassError rc = cass_future_error_code(fut);
+
+    if (rc != CASS_OK)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "Cassandra fetch error : " << rc << " : "
+                                   << cass_error_desc(rc) << " - retrying";
+        // Retry right away. The only time the cluster should ever be overloaded
+        // is when the very first ledger is being written in full (millions of
+        // writes at once), during which no reads should be occurring. If reads
+        // are timing out, the code/architecture should be modified to handle
+        // greater read load, as opposed to just exponential backoff
+        requestParams.backend.readObject(requestParams);
+    }
+    else
+    {
+        auto finish = [&requestParams]() {
+            size_t batchSize = requestParams.batchSize;
+            if (++(requestParams.numFinished) == batchSize)
+                requestParams.cv.notify_all();
+        };
+        CassResult const* res = cass_future_get_result(fut);
+
+        CassRow const* row = cass_result_first_row(res);
+        if (!row)
+        {
+            cass_result_free(res);
+            BOOST_LOG_TRIVIAL(error) << "Cassandra fetch get object row error : " << rc
+                                     << ", " << cass_error_desc(rc);
+            finish();
+            return;
+        }
+        cass_byte_t const* buf;
+        std::size_t bufSize;
+        rc = cass_value_get_bytes(cass_row_get_column(row, 0), &buf, &bufSize);
+        if (rc != CASS_OK)
+        {
+            cass_result_free(res);
+            BOOST_LOG_TRIVIAL(error)
+                << "Cassandra fetch get bytes error : " << rc << ", "
+                << cass_error_desc(rc);
+            finish();
+            return;
+        }
+
+        std::vector<unsigned char> data{buf, buf + bufSize};
+        requestParams.result = std::make_shared<std::string>(data.begin(), data.end());
+        cass_result_free(res);
+        finish();
+    }
+}

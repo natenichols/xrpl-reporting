@@ -5,8 +5,10 @@
 #include <ripple/protocol/ErrorCodes.h>
 #include <reporting/ReportingBackend.h>
 #include <reporting/DBHelpers.h>
+#include <ripple/basics/StringUtilities.h>
 #include <reporting/Pg.h>
 #include <ripple/app/ledger/Ledger.h>
+#include <algorithm>
 
 std::optional<std::uint32_t>
 ledgerSequenceFromRequest(
@@ -16,17 +18,18 @@ ledgerSequenceFromRequest(
     std::stringstream sql;
     sql << "SELECT ledger_seq FROM ledgers WHERE ";
 
-    if (auto p = request.at("ledger_index").is_uint64())
+    if (request.contains("ledger_index"))
     {
-        sql << "ledger_seq = " << std::to_string(p);
+        sql << "ledger_seq = " << std::to_string(request.at("ledger_index").as_uint64());
     }
-    else if (auto p = request.at("ledger_index").is_string())
+    else if (request.contains("ledger_hash"))
     {
-        //Do max Seq stuff
+        sql << "ledger_hash = \\\\x" << request.at("ledger_hash").as_string();
     }
-    else if (auto p = request.at("ledger_hash").is_string())
+    else
     {
-        sql << "ledger_hash = \\\\x" << p;
+        sql.str("");
+        sql << "SELECT max_ledger()";
     }
 
     sql << ";";
@@ -38,28 +41,41 @@ ledgerSequenceFromRequest(
     return std::optional<std::uint32_t>{index.asInt()};
 }
 
-std::vector<void const*>
-loadBookOfferIndexes(ripple::Book book, std::uint32_t seq, std::uint32_t limit, std::shared_ptr<PgPool> const& pool)
+std::vector<ripple::uint256>
+loadBookOfferIndexes(ripple::Book const& book, std::uint32_t seq, std::uint32_t limit, std::shared_ptr<PgPool> const& pool)
 {
-    std::vector<void const*> hashes = {};
+    std::vector<ripple::uint256> hashes = {};
 
     ripple::uint256 bookBase = getBookBase(book);
     ripple::uint256 bookEnd = getQualityNext(bookBase);
 
-    std::stringstream sql;
-    sql << "SELECT offer_indexes FROM books "
-        << "WHERE book_directory >= " << ripple::strHex(bookBase) << " "
-        << "AND book_directory < " << ripple::strHex(bookEnd) << " "
-        << "AND ledger_index <= " << std::to_string(seq) << " "
-        << "LIMIT " << std::to_string(limit) << ";";
+    pg_params dbParams;
 
-    auto indexes = PgQuery(pool)(sql.str().c_str());
+    char const*& command = dbParams.first;
+    std::vector<std::optional<std::string>>& values = dbParams.second;
+
+    command =
+        "SELECT offer_indexes FROM books "
+        "WHERE book_directory >= $1::bytea "
+        "AND book_directory < $2::bytea "
+        "AND ledger_index <= $3::bigint "
+        "LIMIT $4::bigint";
+    
+    values.resize(4);
+    values[0] = "\\x" + ripple::strHex(bookBase);
+    values[1] = "\\x" + ripple::strHex(bookEnd);
+    values[2] = std::to_string(seq);
+    values[3] = std::to_string(limit);
+
+    auto indexes = PgQuery(pool)(dbParams);
     if (!indexes || indexes.isNull())
         return {};
 
     for (auto i = 0; i < indexes.ntuples(); ++i)
     {
-        hashes.push_back(indexes.c_str(i));
+        auto unHexed = ripple::strUnHex(indexes.c_str(i) + 2);
+        if(unHexed)
+            hashes.push_back(ripple::uint256::fromVoid(unHexed->data()));
     }
 
     return hashes;
@@ -68,8 +84,8 @@ loadBookOfferIndexes(ripple::Book book, std::uint32_t seq, std::uint32_t limit, 
 boost::json::object
 doBookOffers(
     boost::json::object const& request,
-    CassandraFlatMapBackend& backend,
-    std::shared_ptr<PgPool> const& pool)
+    CassandraFlatMapBackend const& backend,
+    std::shared_ptr<PgPool>& pool)
 {
     boost::json::object response;
     auto sequence = ledgerSequenceFromRequest(request, pool);
@@ -90,9 +106,9 @@ doBookOffers(
     }
 
     boost::json::object taker_pays;
-    if (auto taker = request.at("taker_pays").is_object())
+    if (request.at("taker_pays").kind() == boost::json::kind::object)
     {
-        taker_pays = taker;
+        taker_pays = request.at("taker_pays").as_object();
     }
     else
     {
@@ -101,9 +117,9 @@ doBookOffers(
     }
 
     boost::json::object taker_gets;
-    if (auto getter = request.at("taker_gets").is_object())
+    if (request.at("taker_gets").kind() == boost::json::kind::object)
     {
-        taker_gets = getter;
+        taker_gets = request.at("taker_gets").as_object();
     }
     else
     {
@@ -117,7 +133,7 @@ doBookOffers(
         return response;
     }
 
-    if (!taker_pays["currency"].is_string())
+    if (!taker_pays.at("currency").is_string())
     {
         response["error"] = "taker_pays.currency should be string";
         return response;
@@ -260,9 +276,9 @@ doBookOffers(
     }
 
     std::uint32_t limit = 2048;
-    if(auto p = request.at("limit").is_uint64())
-        limit = p;
-
+    if(request.at("limit").kind() == boost::json::kind::int64)
+        limit = request.at("limit").as_int64();
+    
     ripple::Book book = {{pay_currency, pay_issuer}, {get_currency, get_issuer}};
 
     auto hashes = loadBookOfferIndexes(book, *sequence, limit, pool);
@@ -270,20 +286,14 @@ doBookOffers(
     response["offers"] = boost::json::value(boost::json::array_kind);
     boost::json::array& jsonOffers = response.at("offers").as_array();
 
-    std::vector<std::vector<unsigned char>> offers;
-    for (auto const& hash : hashes)
-    {
-        auto bytes = backend.fetch(hash, *sequence);
-        if(bytes)
-            offers.push_back(*bytes);
-    }
+    auto offers = backend.fetchBatch(hashes, *sequence);
 
     std::transform(hashes.begin(), hashes.end(),
                    offers.begin(),
                    std::back_inserter(jsonOffers),
-                   [](auto hash, auto offerBytes){
-                       ripple::SerialIter it(offerBytes.data(), offerBytes.size());
-                       ripple::SLE offer{it, ripple::uint256::fromVoid(hash)};
+                   [](auto hash, auto offerBytes) {
+                       ripple::SerialIter it(offerBytes->c_str(), offerBytes->length());
+                       ripple::SLE offer{it, hash};
                        std::string json =
                             offer.getJson(ripple::JsonOptions::none).toStyledString();
                        return boost::json::parse(json);

@@ -20,6 +20,7 @@
 #ifndef RIPPLE_APP_REPORTING_REPORTINGBACKEND_H_INCLUDED
 #define RIPPLE_APP_REPORTING_REPORTINGBACKEND_H_INCLUDED
 
+#include <ripple/basics/base_uint.h>
 #include <boost/asio.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/json.hpp>
@@ -37,6 +38,9 @@ void
 flatMapWriteTransactionCallback(CassFuture* fut, void* cbData);
 void
 flatMapReadCallback(CassFuture* fut, void* cbData);
+void
+flatMapReadObjectCallback(CassFuture* fut, void* cbData);
+
 class CassandraFlatMapBackend
 {
 private:
@@ -625,6 +629,43 @@ public:
         open_ = false;
     }
 
+    std::vector<std::shared_ptr<std::string>>
+    fetchBatch(std::vector<ripple::uint256> const& hashes, std::uint32_t const& sequence) const
+    {
+        std::size_t const numHashes = hashes.size();
+        
+        std::atomic_uint32_t numFinished = 0;
+        std::condition_variable cv;
+        std::mutex mtx;
+        std::vector<std::shared_ptr<std::string>> results{numHashes};
+        std::vector<std::shared_ptr<ReadObjectCallbackData>> cbs;
+        cbs.reserve(numHashes);
+        for (std::size_t i = 0; i < hashes.size(); ++i)
+        {
+            cbs.push_back(std::make_shared<ReadObjectCallbackData>(
+                *this,
+                hashes[i],
+                sequence,
+                results[i],
+                cv,
+                numFinished,
+                numHashes));
+            readObject(*cbs[i]);
+        }
+        assert(results.size() == cbs.size());
+
+        std::unique_lock<std::mutex> lck(mtx);
+        cv.wait(lck, [&numFinished, &numHashes]() {
+            return numFinished == numHashes;
+        });
+
+        BOOST_LOG_TRIVIAL(trace)
+            << "Fetched " << numHashes << " records from Cassandra";
+
+        return results;
+    }
+
+
     // Synchronously fetch the object with key key and store the result in pno
     // @param key the key of the object
     // @param pno object in which to store the result
@@ -633,6 +674,7 @@ public:
     fetch(void const* key, uint32_t sequence) const
     {
         BOOST_LOG_TRIVIAL(trace) << "Fetching from cassandra";
+        auto start = std::chrono::system_clock::now();
         CassStatement* statement = cass_prepared_bind(selectObject_);
         cass_statement_set_consistency(statement, CASS_CONSISTENCY_QUORUM);
         CassError rc = cass_statement_bind_bytes(
@@ -690,7 +732,92 @@ public:
         }
         std::vector<unsigned char> result{buf, buf + bufSize};
         cass_result_free(res);
+        auto end = std::chrono::system_clock::now();
+        BOOST_LOG_TRIVIAL(debug)
+            << "Fetched from cassandra in "
+            << std::chrono::duration_cast<std::chrono::microseconds>(
+                   end - start)
+                   .count()
+            << " microseconds";
         return result;
+    }
+
+    std::optional<
+        std::pair<std::vector<unsigned char>, std::vector<unsigned char>>>
+    fetchTransaction(void const* hash) const
+    {
+        BOOST_LOG_TRIVIAL(trace) << "Fetching from cassandra";
+        auto start = std::chrono::system_clock::now();
+        CassStatement* statement = cass_prepared_bind(selectTransaction_);
+        cass_statement_set_consistency(statement, CASS_CONSISTENCY_QUORUM);
+        CassError rc = cass_statement_bind_bytes(
+            statement, 0, static_cast<cass_byte_t const*>(hash), 32);
+        if (rc != CASS_OK)
+        {
+            cass_statement_free(statement);
+            BOOST_LOG_TRIVIAL(error) << "Binding Cassandra fetch query: " << rc
+                                     << ", " << cass_error_desc(rc);
+            return {};
+        }
+        CassFuture* fut;
+        do
+        {
+            fut = cass_session_execute(session_.get(), statement);
+            rc = cass_future_error_code(fut);
+            if (rc != CASS_OK)
+            {
+                std::stringstream ss;
+                ss << "Cassandra fetch error";
+                ss << ", retrying";
+                ss << ": " << cass_error_desc(rc);
+                BOOST_LOG_TRIVIAL(warning) << ss.str();
+            }
+        } while (rc != CASS_OK);
+
+        CassResult const* res = cass_future_get_result(fut);
+        cass_statement_free(statement);
+        cass_future_free(fut);
+
+        CassRow const* row = cass_result_first_row(res);
+        if (!row)
+        {
+            BOOST_LOG_TRIVIAL(error) << "Cassandra fetch error: no rows";
+            cass_result_free(res);
+            return {};
+        }
+        cass_byte_t const* txBuf;
+        std::size_t txBufSize;
+        rc = cass_value_get_bytes(
+            cass_row_get_column(row, 0), &txBuf, &txBufSize);
+        if (rc != CASS_OK)
+        {
+            cass_result_free(res);
+            BOOST_LOG_TRIVIAL(error) << "Cassandra fetch result error: " << rc
+                                     << ", " << cass_error_desc(rc);
+            return {};
+        }
+        std::vector<unsigned char> txResult{txBuf, txBuf + txBufSize};
+        cass_byte_t const* metaBuf;
+        std::size_t metaBufSize;
+        rc = cass_value_get_bytes(
+            cass_row_get_column(row, 0), &metaBuf, &metaBufSize);
+        if (rc != CASS_OK)
+        {
+            cass_result_free(res);
+            BOOST_LOG_TRIVIAL(error) << "Cassandra fetch result error: " << rc
+                                     << ", " << cass_error_desc(rc);
+            return {};
+        }
+        std::vector<unsigned char> metaResult{metaBuf, metaBuf + metaBufSize};
+        cass_result_free(res);
+        auto end = std::chrono::system_clock::now();
+        BOOST_LOG_TRIVIAL(debug)
+            << "Fetched from cassandra in "
+            << std::chrono::duration_cast<std::chrono::microseconds>(
+                   end - start)
+                   .count()
+            << " microseconds";
+        return {{txResult, metaResult}};
     }
     /*
         std::pair<std::vector<std::pair<uint256, std::shared_ptr<Blob>>>,
@@ -820,8 +947,8 @@ public:
 
     struct ReadCallbackData
     {
-        CassandraFlatMapBackend& backend;
-        const void* const hash;
+        CassandraFlatMapBackend const& backend;
+        ripple::uint256 const& hash;
         BlobPair& result;
         std::condition_variable& cv;
 
@@ -829,8 +956,8 @@ public:
         size_t batchSize;
 
         ReadCallbackData(
-            CassandraFlatMapBackend& backend,
-            const void* const hash,
+            CassandraFlatMapBackend const& backend,
+            ripple::uint256 const& hash,
             BlobPair& result,
             std::condition_variable& cv,
             std::atomic_uint32_t& numFinished,
@@ -847,8 +974,40 @@ public:
         ReadCallbackData(ReadCallbackData const& other) = default;
     };
 
+    struct ReadObjectCallbackData
+    {
+        CassandraFlatMapBackend const& backend;
+        ripple::uint256 const& hash;
+        std::uint32_t seq;
+        std::shared_ptr<std::string>& result;
+        std::condition_variable& cv;
+
+        std::atomic_uint32_t& numFinished;
+        size_t batchSize;
+
+        ReadObjectCallbackData(
+            CassandraFlatMapBackend const& backend,
+            ripple::uint256 const& hash,
+            std::uint32_t seq,
+            std::shared_ptr<std::string>& result,
+            std::condition_variable& cv,
+            std::atomic_uint32_t& numFinished,
+            size_t batchSize)
+            : backend(backend)
+            , hash(hash)
+            , seq(seq)
+            , result(result)
+            , cv(cv)
+            , numFinished(numFinished)
+            , batchSize(batchSize)
+        {
+        }
+
+        ReadObjectCallbackData(ReadObjectCallbackData const& other) = default;
+    };
+
     std::vector<BlobPair>
-    fetchBatch(std::vector<void const*> const& hashes)
+    fetchBatch(std::vector<ripple::uint256> const& hashes) const
     {
         std::size_t const numHashes = hashes.size();
         BOOST_LOG_TRIVIAL(trace)
@@ -862,7 +1021,7 @@ public:
         for (std::size_t i = 0; i < hashes.size(); ++i)
         {
             cbs.push_back(std::make_shared<ReadCallbackData>(
-                *this, &hashes[i], results[i], cv, numFinished, numHashes));
+                *this, hashes[i], results[i], cv, numFinished, numHashes));
             read(*cbs[i]);
         }
         assert(results.size() == cbs.size());
@@ -878,12 +1037,15 @@ public:
     }
 
     void
-    read(ReadCallbackData& data)
+    read(ReadCallbackData& data) const
     {
         CassStatement* statement = cass_prepared_bind(selectTransaction_);
         cass_statement_set_consistency(statement, CASS_CONSISTENCY_QUORUM);
         CassError rc = cass_statement_bind_bytes(
-            statement, 0, static_cast<cass_byte_t const*>(data.hash), 32);
+            statement,
+            0,
+            static_cast<cass_byte_t const*>(data.hash.data()),
+            32);
         if (rc != CASS_OK)
         {
             size_t batchSize = data.batchSize;
@@ -901,6 +1063,52 @@ public:
 
         cass_future_set_callback(
             fut, flatMapReadCallback, static_cast<void*>(&data));
+        cass_future_free(fut);
+    }
+
+    void
+    readObject(ReadObjectCallbackData& data) const
+    {
+        CassStatement* statement = cass_prepared_bind(selectObject_);
+        cass_statement_set_consistency(statement, CASS_CONSISTENCY_QUORUM);
+        CassError rc = cass_statement_bind_bytes(
+            statement,
+            0,
+            static_cast<cass_byte_t const*>(data.hash.data()),
+            32);
+        if (rc != CASS_OK)
+        {
+            size_t batchSize = data.batchSize;
+            if (++(data.numFinished) == batchSize)
+                data.cv.notify_all();
+            cass_statement_free(statement);
+            BOOST_LOG_TRIVIAL(error) << "Binding Cassandra fetch query: " << rc
+                                     << ", " << cass_error_desc(rc);
+            return;
+        }
+
+        rc = cass_statement_bind_int64(
+            statement,
+            1,
+            data.seq);
+
+        if (rc != CASS_OK)
+        {
+            size_t batchSize = data.batchSize;
+            if (++(data.numFinished) == batchSize)
+                data.cv.notify_all();
+            cass_statement_free(statement);
+            BOOST_LOG_TRIVIAL(error) << "Binding Cassandra fetch query: " << rc
+                                     << ", " << cass_error_desc(rc);
+            return;
+        }
+
+        CassFuture* fut = cass_session_execute(session_.get(), statement);
+
+        cass_statement_free(statement);
+
+        cass_future_set_callback(
+            fut, flatMapReadObjectCallback, static_cast<void*>(&data));
         cass_future_free(fut);
     }
 

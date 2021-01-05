@@ -261,12 +261,6 @@ public:
         onStop();
     }
 
-    PgPool&
-    getPgPool()
-    {
-        return *pgPool_;
-    }
-
     NetworkValidatedLedgers&
     getNetworkValidatedLedgers()
     {
@@ -344,6 +338,12 @@ public:
     getFlatMapBackend()
     {
         return flatMapBackend_;
+    }
+
+    std::shared_ptr<PgPool>&
+    getPgPool()
+    {
+        return pgPool_;
     }
 
 private:

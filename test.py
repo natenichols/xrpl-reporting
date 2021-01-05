@@ -12,7 +12,7 @@ import threading
 
 
 
-async def ping(ip, port):
+async def account_info(ip, port):
     address = 'ws://' + str(ip) + ':' + str(port)
     try:
         async with websockets.connect(address) as ws:
@@ -22,13 +22,34 @@ async def ping(ip, port):
     except websockets.exceptions.ConnectionClosedError as e:
         print(e)
 
+async def account_tx(ip, port):
+    address = 'ws://' + str(ip) + ':' + str(port)
+    try:
+        async with websockets.connect(address) as ws:
+            await ws.send(json.dumps({"command":"account_tx","account":"rDzTZxa7NwD9vmNf5dvTbW4FQDNSRsfPv6"}))
+            res = json.loads(await ws.recv())
+            print(res)
+    except websockets.exceptions.ConnectionClosedError as e:
+        print(e)
+
+async def tx(ip, port, tx_hash):
+    address = 'ws://' + str(ip) + ':' + str(port)
+    try:
+        async with websockets.connect(address) as ws:
+            await ws.send(json.dumps({"command":"tx","transaction":tx_hash}))
+            res = json.loads(await ws.recv())
+            print(res)
+    except websockets.exceptions.ConnectionClosedError as e:
+        print(e)
+
 
 
 
 parser = argparse.ArgumentParser(description='test script for xrpl-reporting')
-parser.add_argument('action', choices=["ping"])
+parser.add_argument('action', choices=["account_info", "tx", "account_tx"])
 parser.add_argument('--ip', default='127.0.0.1')
 parser.add_argument('--port', default='8080')
+parser.add_argument('--hash')
 
 
 
@@ -36,9 +57,15 @@ args = parser.parse_args()
 
 def run(args):
     asyncio.set_event_loop(asyncio.new_event_loop())
-    if args.action == "ping":
+    if args.action == "account_info":
         asyncio.get_event_loop().run_until_complete(
-                ping(args.ip, args.port))
+                account_info(args.ip, args.port))
+    if args.action == "tx":
+        asyncio.get_event_loop().run_until_complete(
+                tx(args.ip, args.port, args.hash))
+    if args.action == "account_tx":
+        asyncio.get_event_loop().run_until_complete(
+                account_tx(args.ip, args.port))
     else:
         print("incorrect arguments")
 
