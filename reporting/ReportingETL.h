@@ -185,16 +185,12 @@ private:
 
     std::optional<BookDirectoryData>
     handleOffer(std::string const& keyString, std::uint32_t seq, std::string const& offer);
-
+ 
+    template<class T>
     std::vector<BookDirectoryData>
     insertObjects(
         ripple::LedgerInfo const& ledger,
-        org::xrpl::rpc::v1::GetLedgerResponse& rawData);
-
-    std::vector<BookDirectoryData>
-    insertObjects(
-        ripple::LedgerInfo const& ledger,
-        org::xrpl::rpc::v1::GetLedgerDataResponse& rawData);
+        T& rawData);
 
     /// Extract data for a particular ledger from an ETL source. This function
     /// continously tries to extract the specified ledger (using all available

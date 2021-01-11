@@ -118,40 +118,11 @@ ReportingETL::handleOffer(std::string const& keyString, std::uint32_t seq, std::
     return BookDirectoryData(sle, seq);
 }
 
+template<class T>
 std::vector<BookDirectoryData>
 ReportingETL::insertObjects(
     ripple::LedgerInfo const& ledger,
-    org::xrpl::rpc::v1::GetLedgerResponse& rawData)
-{
-    std::vector<BookDirectoryData> dirData = {};
-    for (auto& obj : *(rawData.mutable_ledger_objects()->mutable_objects()))
-    {
-        if(*obj.mutable_data() == "")
-            continue;
-
-        std::string str = *obj.mutable_data();
-        short offer_bytes = (str[1] << 8) | str[2];
-
-        if(offer_bytes == 0x006f)
-        {
-            auto data = handleOffer(*obj.mutable_key(), ledger.seq, *obj.mutable_data());
-            if (data)
-                dirData.push_back(*data);
-        }
-
-        flatMapBackend_.store(
-            std::move(*obj.mutable_key()),
-            ledger.seq,
-            std::move(*obj.mutable_data()));
-    }
-
-    return dirData;
-}
-
-std::vector<BookDirectoryData>
-ReportingETL::insertObjects(
-    ripple::LedgerInfo const& ledger,
-    org::xrpl::rpc::v1::GetLedgerDataResponse& rawData)
+    T& rawData)
 {
     std::vector<BookDirectoryData> dirData = {};
     for (auto& obj : *(rawData.mutable_ledger_objects()->mutable_objects()))

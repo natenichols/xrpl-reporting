@@ -8,6 +8,7 @@
 #include <ripple/basics/StringUtilities.h>
 #include <reporting/Pg.h>
 #include <ripple/app/ledger/Ledger.h>
+#include <handlers/RPCHelpers.h>
 #include <algorithm>
 
 std::optional<std::uint32_t>
@@ -42,7 +43,10 @@ ledgerSequenceFromRequest(
 }
 
 std::vector<ripple::uint256>
-loadBookOfferIndexes(ripple::Book const& book, std::uint32_t seq, std::uint32_t limit, std::shared_ptr<PgPool> const& pool)
+loadBookOfferIndexes(
+    ripple::Book const& book,
+    std::uint32_t seq, std::uint32_t limit,
+    std::shared_ptr<PgPool> const& pool)
 {
     std::vector<ripple::uint256> hashes = {};
 
@@ -281,23 +285,38 @@ doBookOffers(
     
     ripple::Book book = {{pay_currency, pay_issuer}, {get_currency, get_issuer}};
 
+    auto start = std::chrono::system_clock::now();
     auto hashes = loadBookOfferIndexes(book, *sequence, limit, pool);
+    auto end = std::chrono::system_clock::now(); 
+
+    BOOST_LOG_TRIVIAL(warning)
+        << "Time loading books from Postgres: " << ((end - start).count() / 1000000000.0);
 
     response["offers"] = boost::json::value(boost::json::array_kind);
     boost::json::array& jsonOffers = response.at("offers").as_array();
 
+    start = std::chrono::system_clock::now();
     auto offers = backend.fetchBatch(hashes, *sequence);
+    end = std::chrono::system_clock::now();
 
-    std::transform(hashes.begin(), hashes.end(),
-                   offers.begin(),
+    BOOST_LOG_TRIVIAL(warning)
+        << "Time loading books with fetchBatch: " << ((end - start).count() / 1000000000.0);
+
+    start = std::chrono::system_clock::now();
+    std::transform(std::move_iterator(hashes.begin()),
+                   std::move_iterator(hashes.end()),
+                   std::move_iterator(offers.begin()),
                    std::back_inserter(jsonOffers),
                    [](auto hash, auto offerBytes) {
                        ripple::SerialIter it(offerBytes->c_str(), offerBytes->length());
                        ripple::SLE offer{it, hash};
-                       std::string json =
-                            offer.getJson(ripple::JsonOptions::none).toStyledString();
-                       return boost::json::parse(json);
+                       return getJson(offer);
                    });
+
+    end = std::chrono::system_clock::now();
+
+    BOOST_LOG_TRIVIAL(warning)
+        << "Time transforming to json: " << ((end - start).count() / 1000000000.0);
 
     return response;
 }
