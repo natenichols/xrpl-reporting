@@ -29,6 +29,7 @@
 #include <reporting/ETLSource.h>
 #include <reporting/Pg.h>
 #include <reporting/ReportingBackend.h>
+#include <reporting/server/SubscriptionManager.h>
 
 #include "org/xrpl/rpc/v1/xrp_ledger.grpc.pb.h"
 #include <grpcpp/grpcpp.h>
@@ -41,6 +42,7 @@
 
 struct AccountTransactionsData;
 struct BookDirectoryData;
+class SubscriptionManager;
 
 /**
  * This class is responsible for continuously extracting data from a
@@ -62,6 +64,7 @@ class ReportingETL
 private:
     CassandraFlatMapBackend flatMapBackend_;
     std::shared_ptr<PgPool> pgPool_;
+    std::unique_ptr<SubscriptionManager> subs_ = std::make_unique<SubscriptionManager>();
 
     std::thread worker_;
     boost::asio::io_context& ioContext_;
@@ -334,6 +337,12 @@ public:
     getFlatMapBackend()
     {
         return flatMapBackend_;
+    }
+
+    SubscriptionManager&
+    getSubscriptionManager()
+    {
+        return *subs_;
     }
 
     std::shared_ptr<PgPool>&

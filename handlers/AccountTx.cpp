@@ -160,4 +160,3 @@ doAccountTx(
     response["transactions"] = txns;
     return response;
 }
-

@@ -60,11 +60,15 @@ target_sources(reporting PRIVATE
     reporting/Pg.cpp
     reporting/DBHelpers.cpp
     reporting/ReportingETL.cpp
+    reporting/server/session.cpp
+    reporting/server/SubscriptionManager.cpp
     handlers/AccountInfo.cpp
     handlers/Tx.cpp
     handlers/RPCHelpers.cpp
     handlers/AccountTx.cpp
-    handlers/BookOffers.cpp)
+    handlers/BookOffers.cpp
+    handlers/LedgerData.cpp
+    handlers/Subscribe.cpp)
 
 
 message(${Boost_LIBRARIES})

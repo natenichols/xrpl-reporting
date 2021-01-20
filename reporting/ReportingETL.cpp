@@ -127,9 +127,6 @@ ReportingETL::insertObjects(
     std::vector<BookDirectoryData> dirData = {};
     for (auto& obj : *(rawData.mutable_ledger_objects()->mutable_objects()))
     {
-        if(*obj.mutable_data() == "")
-            continue;
-
         std::string str = *obj.mutable_data();
         short offer_bytes = (str[1] << 8) | str[2];
 
@@ -230,7 +227,7 @@ ReportingETL::loadInitialLedger(uint32_t startingSequence)
 void
 ReportingETL::publishLedger(ripple::LedgerInfo const& lgrInfo)
 {
-    // app_.getOPs().pubLedger(ledger);
+    subs_->pubLedger(lgrInfo);
 
     setLastPublish();
 }
@@ -291,15 +288,14 @@ ReportingETL::publishLedger(uint32_t ledgerSequence, uint32_t maxAttempts)
             continue;
         }
 
-        /*
-        publishStrand_.post([this, ledger]() {
-            app_.getOPs().pubLedger(ledger);
+        publishStrand_.post([this, &ledger]() {
+            subs_->pubLedger(*ledger);
             setLastPublish();
             BOOST_LOG_TRIVIAL(info)
                 << __func__ << " : "
-                << "Published ledger. " << detail::toString(ledger->info());
+                << "Published ledger. " << ledger->seq;
         });
-        */
+        
         return true;
     }
     return false;
@@ -589,7 +585,7 @@ ReportingETL::monitor()
     }
     else
     {
-        // publishLedger(ledger);
+        publishLedger(*ledger);
     }
     uint32_t nextSequence = ledger->seq + 1;
 

@@ -552,7 +552,7 @@ public:
              */
             cass_future_free(prepare_future);
 
-            query = {};
+            query.str("");
             query << "SELECT key, object FROM " << tableName << "flat "
                   << " WHERE TOKEN(key) >= ? and sequence <= ?"
                   << " and object > 0x"
@@ -584,7 +584,7 @@ public:
             // object
             //
             cass_future_free(prepare_future);
-            query = {};
+            query.str("");
             query << "SELECT TOKEN(key) FROM " << tableName << "flat "
                   << " WHERE key = ? LIMIT 1";
 
